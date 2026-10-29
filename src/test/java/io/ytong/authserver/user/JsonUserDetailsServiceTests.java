@@ -1,21 +1,32 @@
 package io.ytong.authserver.user;
 
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import static org.assertj.core.api.Assertions.*;
 
 class JsonUserDetailsServiceTests {
-    @TempDir Path directory;
+
+    @TempDir
+    Path directory;
     static final String HASH = "{bcrypt}" + new BCryptPasswordEncoder(10).encode("test-password");
+
     String record(String id, String username) {
         return "{\"id\":\"" + id + "\",\"username\":\"" + username + "\",\"passwordHash\":\"" + HASH
                 + "\",\"enabled\":true,\"roles\":[\"USER\"]}";
     }
-    String document(String... users) { return "{\"schemaVersion\":1,\"users\":[" + String.join(",", users) + "]}"; }
-    @Test void rejectsInvalidDirectoriesWithoutLeakingCredentials() throws Exception {
+
+    String document(String... users) {
+        return "{\"schemaVersion\":1,\"users\":[" + String.join(",", users) + "]}";
+    }
+
+    @Test
+    void rejectsInvalidDirectoriesWithoutLeakingCredentials() throws Exception {
         Path file = directory.resolve("users.json");
         String valid = record("user-001", "alice");
         for (String invalid : java.util.List.of(
@@ -34,7 +45,9 @@ class JsonUserDetailsServiceTests {
         assertThatThrownBy(() -> new JsonUserDetailsService(directory.resolve("missing"), Set.of("USER")))
                 .isInstanceOf(IllegalStateException.class);
     }
-    @Test void loadsAnImmutableSnapshotAndReplacesItOnRestart() throws Exception {
+
+    @Test
+    void loadsAnImmutableSnapshotAndReplacesItOnRestart() throws Exception {
         Path file = directory.resolve("users.json");
         Files.writeString(file, document(record("user-001", "alice")));
         var first = new JsonUserDetailsService(file, Set.of("USER"));

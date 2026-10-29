@@ -1,12 +1,14 @@
 package io.ytong.authserver;
 
-import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
-import java.util.*;
-import com.nimbusds.jwt.SignedJWT;
-import com.nimbusds.jose.jwk.*;
-import com.nimbusds.jose.crypto.RSASSAVerifier;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,37 +17,53 @@ import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.web.servlet.*;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.nimbusds.jose.crypto.RSASSAVerifier;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jwt.SignedJWT;
+
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
-
-import static org.assertj.core.api.Assertions.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
 @AutoConfigureMockMvc
 class AuthServerIntegrationTests {
+
     static final JsonMapper JSON = JsonMapper.builder().build();
     static final String PASSWORD = "test-password";
     static final String HASH = "{bcrypt}" + new BCryptPasswordEncoder(10).encode(PASSWORD);
     static final String VERIFIER = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~";
     static final Path DIRECTORY = directory();
+
     static Path directory() {
         try {
             Path path = Files.createTempFile("auth-test-users", ".json");
-            Files.writeString(path, "{\"schemaVersion\":1,\"users\":[" +
-                    user("user-001", "alice", true, "USER") + "," +
-                    user("user-002", "disabled", false, "USER") + "," +
-                    user("user-003", "restricted", true, "") + "]}");
+            Files.writeString(path, "{\"schemaVersion\":1,\"users\":["
+                    + user("user-001", "alice", true, "USER") + ","
+                    + user("user-002", "disabled", false, "USER") + ","
+                    + user("user-003", "restricted", true, "") + "]}");
             path.toFile().deleteOnExit();
             return path;
-        } catch (Exception ex) { throw new RuntimeException(ex); }
+        } catch (Exception ex) {
+            throw new RuntimeException(ex);
+        }
     }
+
     static String user(String id, String name, boolean enabled, String role) {
         return "{\"id\":\"" + id + "\",\"username\":\"" + name + "\",\"passwordHash\":\"" + HASH
                 + "\",\"enabled\":" + enabled + ",\"roles\":" + (role.isEmpty() ? "[]" : "[\"" + role + "\"]") + "}";
     }
+
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry properties) {
         properties.add("auth.users.path", DIRECTORY::toString);
@@ -58,41 +76,59 @@ class AuthServerIntegrationTests {
         properties.add("auth.clients[1].redirect-uris[0]", () -> "http://localhost:9000/app/backend-callback");
         properties.add("auth.clients[1].scopes[0]", () -> "demo.read");
     }
-    @Autowired MockMvc mvc;
-    JsonNode json(MvcResult result) throws Exception { return JSON.readTree(result.getResponse().getContentAsString()); }
+    @Autowired
+    MockMvc mvc;
+
+    JsonNode json(MvcResult result) throws Exception {
+        return JSON.readTree(result.getResponse().getContentAsString());
+    }
+
     record Browser(MockHttpSession session, String header, String csrf) {}
+
     Browser browser() throws Exception {
         MvcResult result = mvc.perform(get("/api/auth/csrf")).andExpect(status().isOk()).andReturn();
         JsonNode body = json(result);
         return new Browser((MockHttpSession) result.getRequest().getSession(), body.path("headerName").stringValue(), body.path("token").stringValue());
     }
+
     MvcResult login(Browser browser, String username, String password) throws Exception {
         return mvc.perform(post("/api/auth/login").session(browser.session()).header(browser.header(), browser.csrf())
-                .with(request -> { request.setRequestedSessionId(browser.session().getId()); request.setRequestedSessionIdValid(true); return request; })
+                .with(request -> {
+                    request.setRequestedSessionId(browser.session().getId());
+                    request.setRequestedSessionIdValid(true);
+                    return request;
+                })
                 .contentType("application/json").content(JSON.writeValueAsString(Map.of("username", username, "password", password))))
                 .andReturn();
     }
+
     String challenge() throws Exception {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(VERIFIER.getBytes(StandardCharsets.US_ASCII)));
     }
+
     org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder authorize() throws Exception {
         return authorize("demo.read", "S256", "http://localhost:9000/app/callback");
     }
+
     org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder authorize(String scope, String method, String redirect) throws Exception {
         return get("/oauth2/authorize").queryParam("response_type", "code").queryParam("client_id", "webapp")
                 .queryParam("redirect_uri", redirect).queryParam("scope", scope)
                 .queryParam("state", "random-client-state").queryParam("code_challenge", challenge()).queryParam("code_challenge_method", method);
     }
+
     String code(MockHttpSession session) throws Exception {
         String callback = mvc.perform(authorize().session(session)).andExpect(status().is3xxRedirection()).andReturn().getResponse().getRedirectedUrl();
         assertThat(callback).startsWith("http://localhost:9000/app/callback?").contains("state=random-client-state");
         return org.springframework.web.util.UriComponentsBuilder.fromUriString(callback).build().getQueryParams().getFirst("code");
     }
+
     ResultActions exchange(String code, String verifier) throws Exception {
         return mvc.perform(post("/oauth2/token").param("grant_type", "authorization_code").param("client_id", "webapp")
                 .param("redirect_uri", "http://localhost:9000/app/callback").param("code", code).param("code_verifier", verifier));
     }
-    @Test void loginPersistsSessionRotatesIdAndLogsOut() throws Exception {
+
+    @Test
+    void loginPersistsSessionRotatesIdAndLogsOut() throws Exception {
         Browser browser = browser();
         String original = browser.session().getId();
         MvcResult result = login(browser, "alice", PASSWORD);
@@ -107,7 +143,9 @@ class AuthServerIntegrationTests {
                 .andExpect(status().isNoContent());
         assertThat(browser.session().isInvalid()).isTrue();
     }
-    @Test void loginErrorsAreGenericAndSessionApisRequireAuthentication() throws Exception {
+
+    @Test
+    void loginErrorsAreGenericAndSessionApisRequireAuthentication() throws Exception {
         for (String username : List.of("alice", "missing", "disabled")) {
             MvcResult result = login(browser(), username, "incorrect");
             assertThat(result.getResponse().getStatus()).isEqualTo(401);
@@ -124,7 +162,9 @@ class AuthServerIntegrationTests {
                     .contentType("application/json").content(input)).andExpect(status().isBadRequest());
         }
     }
-    @Test void fullWebappFlowProducesSignedJwtAndRejectsCodeReplay() throws Exception {
+
+    @Test
+    void fullWebappFlowProducesSignedJwtAndRejectsCodeReplay() throws Exception {
         Browser browser = browser();
         mvc.perform(get("/oauth2/authorize?response_type=code&client_id=webapp&redirect_uri=http://localhost:9000/app/callback&scope=demo.read&state=random-client-state&code_challenge=" + challenge() + "&code_challenge_method=S256")
                 .session(browser.session())).andExpect(redirectedUrl("/app/login"));
@@ -158,7 +198,9 @@ class AuthServerIntegrationTests {
         assertThat(jwt.verify(new RSASSAVerifier(key))).isTrue();
         exchange(code, VERIFIER).andExpect(status().isBadRequest());
     }
-    @Test void rejectsInvalidAuthorizationAndScopePolicy() throws Exception {
+
+    @Test
+    void rejectsInvalidAuthorizationAndScopePolicy() throws Exception {
         mvc.perform(authorize("demo.read", "S256", "https://attacker.example/callback"))
                 .andExpect(status().isBadRequest()).andExpect(header().doesNotExist("Location"));
         mvc.perform(get("/oauth2/authorize").queryParam("response_type", "code").queryParam("client_id", "webapp")
@@ -170,7 +212,9 @@ class AuthServerIntegrationTests {
         assertThat(login(restricted, "restricted", PASSWORD).getResponse().getStatus()).isEqualTo(200);
         mvc.perform(authorize().session(restricted.session())).andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_scope"));
     }
-    @Test void rejectsWrongVerifierAndUnsupportedGrant() throws Exception {
+
+    @Test
+    void rejectsWrongVerifierAndUnsupportedGrant() throws Exception {
         Browser b = browser();
         assertThat(login(b, "alice", PASSWORD).getResponse().getStatus()).isEqualTo(200);
         exchange(code(b.session()), "a".repeat(43)).andExpect(status().isBadRequest());
@@ -178,13 +222,17 @@ class AuthServerIntegrationTests {
                 .andExpect(status().is4xxClientError());
         mvc.perform(post("/oauth2/introspect").param("token", "fake")).andExpect(status().isUnauthorized());
     }
-    @Test void discoveryAdvertisesOnlyImplementedProtocol() throws Exception {
+
+    @Test
+    void discoveryAdvertisesOnlyImplementedProtocol() throws Exception {
         JsonNode metadata = json(mvc.perform(get("/.well-known/oauth-authorization-server")).andExpect(status().isOk()).andReturn());
         assertThat(metadata.path("issuer").stringValue()).isEqualTo("http://localhost:9000");
         assertThat(metadata.path("code_challenge_methods_supported").toString()).contains("S256").doesNotContain("plain");
         mvc.perform(get("/.well-known/openid-configuration")).andExpect(status().isUnauthorized());
     }
-    @Test void confidentialClientAuthenticatesAndCanIntrospectAndRevoke() throws Exception {
+
+    @Test
+    void confidentialClientAuthenticatesAndCanIntrospectAndRevoke() throws Exception {
         Browser b = browser();
         assertThat(login(b, "alice", PASSWORD).getResponse().getStatus()).isEqualTo(200);
         String callback = mvc.perform(get("/oauth2/authorize").session(b.session())
@@ -214,8 +262,11 @@ class AuthServerIntegrationTests {
         // Revocation changes server state, but the signed JWT is still cryptographically valid.
         assertThat(SignedJWT.parse(token).getJWTClaimsSet().getExpirationTime().toInstant()).isAfter(java.time.Instant.now());
     }
-    @Autowired org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService authorizations;
-    @Test void rejectsExpiredCodesAndConcurrentReuse() throws Exception {
+    @Autowired
+    org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService authorizations;
+
+    @Test
+    void rejectsExpiredCodesAndConcurrentReuse() throws Exception {
         Browser b = browser();
         assertThat(login(b, "alice", PASSWORD).getResponse().getStatus()).isEqualTo(200);
         String expired = code(b.session());
@@ -237,6 +288,8 @@ class AuthServerIntegrationTests {
             start.countDown();
             assertThat(List.of(first.get(10, java.util.concurrent.TimeUnit.SECONDS), second.get(10, java.util.concurrent.TimeUnit.SECONDS)))
                     .containsExactlyInAnyOrder(200, 400);
-        } finally { executor.shutdownNow(); }
+        } finally {
+            executor.shutdownNow();
+        }
     }
 }
