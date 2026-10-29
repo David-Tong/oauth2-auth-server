@@ -10,6 +10,9 @@ OAuth2 metadata, JWKS, introspection, and revocation. See the
 
 ## Build and test
 
+For local setup and a step-by-step HTTP walkthrough, see
+[Run locally and test over HTTP](DESIGNS/run-and-http-test.md).
+
 Install JDK 17+ and Maven, then run:
 
 ```shell
@@ -108,7 +111,10 @@ Login errors use JSON `{ "error": "...", "message": "..." }`: 400 for malformed
 input, 401 for invalid credentials (including disabled/unknown users), 403 for
 invalid CSRF, 415 for a non-JSON content type, and 429 for rate limiting.
 Login requests are limited to 4 KiB. Rate limits are 10 attempts per username and
-60 per source address per minute, held in bounded process memory.
+60 per source address over a sliding 60-second window, held in bounded process
+memory. Saturated keys do not record additional rejected attempts or extend their
+lockout. Requests check both account and source limits, using striped locks so
+unrelated requests can proceed concurrently.
 
 ## Deployment configuration
 

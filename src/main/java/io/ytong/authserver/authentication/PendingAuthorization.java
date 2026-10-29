@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -15,7 +16,7 @@ public class PendingAuthorization {
     private static final String KEY = PendingAuthorization.class.getName();
     private final java.time.Clock clock;
 
-    @org.springframework.beans.factory.annotation.Autowired
+    @Autowired
     public PendingAuthorization() {
         this(java.time.Clock.systemUTC());
     }

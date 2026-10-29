@@ -8,6 +8,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -29,7 +30,7 @@ public class JsonUserDetailsService implements UserDetailsService {
 
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
+    @Autowired
     public JsonUserDetailsService(AuthProperties properties) {
         this(Path.of(properties.users().path()), properties.roleScopes().keySet());
     }

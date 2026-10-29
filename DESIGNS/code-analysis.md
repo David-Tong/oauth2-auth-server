@@ -198,7 +198,7 @@ the setting to that profile, so deployment configuration must control it.
 | Client registrations | Configuration, in-memory repository |
 | Browser identity and pending flow | Servlet session; no shared session store configured |
 | Codes, grants, token status | `InMemoryOAuth2AuthorizationService`; lost on restart |
-| Login attempt windows | Synchronized in-process map; reset on restart |
+| Login attempt windows | Timestamp queues under 64 ordered lock stripes; reset on restart |
 | Signing material | External keystore by default; survives restart if retained |
 
 Persistent keys allow an already-issued JWT to remain signature-verifiable after
@@ -220,13 +220,17 @@ verification; they are not a claim of a complete security audit.
 1. **Token exchange has a global throughput limit.** The process-wide lock is a
    practical single-instance replay defense, but a scalable implementation needs
    atomic code consumption in shared durable storage rather than this lock.
-2. **Rate limiting can deny unrelated logins at capacity.** `check` removes
-   expired windows, then rejects every request when the map already has at least
-   10,000 entries, even for existing keys. One check can add two keys, so the
-   threshold is not a strict 10,000-entry maximum. Every check also scans the
-   map while holding its monitor. Add expiry/capacity tests before evolving this
-   limiter, and use upstream source limits when running behind a proxy because
-   `getRemoteAddr()` identifies the direct peer.
+2. **Rate limiting is bounded and process-local.** Updated on 2026-10-29 to use
+   timestamp queues for sliding 60-second windows and a monotonic ticker. Each
+   request locks only its source/account stripes in index order, and prunes only
+   its two queues. Atomic capacity reservation enforces 10,000 keys, including
+   concurrent insertions; existing keys remain usable at capacity. Capacity
+   pressure triggers a sweep at most once per second, locking one stripe at a
+   time; other callers skip an in-progress sweep and may receive 429 until space
+   is reclaimed. Saturated queues do not retain further rejected attempts, so
+   memory stays bounded and such attempts do not extend that key's lockout.
+   Stripe collisions still cause some contention. Use upstream source limits
+   behind a proxy because `getRemoteAddr()` identifies the direct peer.
 3. **Configuration errors are only partly structured.** `AuthProperties` has no
    declarative validation, and several consumers assume non-null nested records,
    maps, and lists. Explicit validation could make incomplete external
@@ -242,21 +246,21 @@ verification; they are not a claim of a complete security audit.
 
 ## Test evidence and limits
 
-The repository contains 15 JUnit test methods across five test classes:
+The repository contains 20 JUnit test methods across five test classes:
 
 | Test class | Behavior inspected in source |
 | --- | --- |
 | `AuthServerIntegrationTests` (8) | Login persistence and session-ID rotation; logout and CSRF; generic credential errors; malformed/oversized login; full continuation/code/JWT flow; invalid redirect, scope, and PKCE; wrong verifier and unsupported password grant; discovery; confidential client authentication; introspection/revocation; expired codes and concurrent replay |
 | `JsonUserDetailsServiceTests` (2) | Invalid schema/data rejection without credential leakage; immutable snapshot and reload through a new instance |
 | `SigningKeysTests` (2) | Stable key loading, retired certificate publication, and missing production key configuration |
-| `LoginRateLimiterTests` (2) | Account limits across sources and source limits across accounts |
+| `LoginRateLimiterTests` (7) | Account/source limits, sliding boundaries, expiry/capacity recovery, and concurrent limits/capacity |
 | `PendingAuthorizationTests` (1) | Session binding, replacement, and expiry using a controllable clock |
 
 Tests use MockMvc, temporary user data, generated bcrypt hashes, and temporary
 key material. They provide useful protocol and application coverage but do not
 exercise a real browser, deployed reverse proxy, resource server, or multiple
 instances. Additional useful checks include cookie attributes in a running
-container, cache headers, limiter expiry/capacity, detailed invalid configuration,
+container, cache headers, detailed invalid configuration,
 and resource-server rejection of expired tokens.
 
 Validation on 2026-10-28: `mvn verify -q` completed successfully. Surefire reports
