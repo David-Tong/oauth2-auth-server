@@ -3,20 +3,30 @@ package io.ytong.authserver.user;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
-import io.ytong.authserver.config.AuthProperties;
-import org.springframework.security.core.userdetails.*;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
+
+import io.ytong.authserver.config.AuthProperties;
 import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 @Service
 public class JsonUserDetailsService implements UserDetailsService {
+
     private static final int MAX_BYTES = 1_048_576;
     private final Map<String, Entry> users;
 
     public record Entry(String id, String username, String passwordHash, boolean enabled, Set<String> roles) {
+
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -75,14 +85,16 @@ public class JsonUserDetailsService implements UserDetailsService {
     }
 
     private static void require(boolean valid) {
-        if (!valid)
+        if (!valid) {
             throw new IllegalArgumentException("Invalid directory");
+        }
     }
 
     public Entry entry(String username) {
         Entry entry = users.get(username);
-        if (entry == null)
+        if (entry == null) {
             throw new UsernameNotFoundException("Invalid credentials");
+        }
         return entry;
     }
 
