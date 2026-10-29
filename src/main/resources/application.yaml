@@ -1,0 +1,43 @@
+debug: false
+logging:
+  level:
+    org.springframework.web: INFO
+    org.springframework.boot: INFO
+    org.springframework.security: INFO
+spring:
+  application:
+    name: oauth2-auth-server
+server:
+  port: 9000
+  forward-headers-strategy: none
+  max-http-request-header-size: 16KB
+  servlet:
+    session:
+      timeout: 15m
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${AUTH_COOKIE_SECURE:true}
+  tomcat:
+    max-http-form-post-size: 8KB
+    max-swallow-size: 8KB
+auth:
+  issuer: ${AUTH_ISSUER:http://localhost:9000}
+  login-url: ${AUTH_LOGIN_URL:/app/login}
+  audience: demo-api
+  users:
+    path: ${AUTH_USERS_PATH:./config/users.json}
+  keys:
+    ephemeral: false
+    path: ${AUTH_KEYSTORE_PATH:./config/keys/signing.p12}
+    password: ${AUTH_KEYSTORE_PASSWORD:}
+    alias: ${AUTH_KEY_ALIAS:signing}
+  clients:
+    - id: webapp
+      redirect-uris:
+        - http://localhost:9000/app/callback
+      scopes:
+        - demo.read
+  role-scopes:
+    USER:
+      - demo.read

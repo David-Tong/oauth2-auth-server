@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "users": [
+    {
+      "id": "user-001",
+      "username": "alice",
+      "passwordHash": "{bcrypt}<replace-with-an-offline-generated-hash>",
+      "enabled": true,
+      "roles": ["USER"]
+    }
+  ]
+}

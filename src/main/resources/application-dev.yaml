@@ -1,0 +1,8 @@
+server:
+  servlet:
+    session:
+      cookie:
+        secure: false
+auth:
+  keys:
+    ephemeral: true
