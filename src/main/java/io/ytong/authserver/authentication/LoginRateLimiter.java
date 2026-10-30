@@ -3,10 +3,10 @@ package io.ytong.authserver.authentication;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,16 +19,13 @@ public class LoginRateLimiter {
     private static final long WINDOW_NANOS = Duration.ofSeconds(60).toNanos();
     private static final long SWEEP_INTERVAL_NANOS = Duration.ofSeconds(1).toNanos();
     private static final int MAX_KEYS = 10_000;
-    private static final int STRIPE_COUNT = 64;
-    private static final class Stripe {
-        final Map<String, Deque<Long>> attempts = new HashMap<>();
-    }
+    private enum Decision { ACCEPTED, LIMITED, CAPACITY }
 
-    private final Stripe[] stripes = new Stripe[STRIPE_COUNT];
-    private final AtomicInteger keyCount = new AtomicInteger();
-    private final ReentrantLock sweepLock = new ReentrantLock();
+    private final ConcurrentHashMap<String, Deque<Long>> attempts = new ConcurrentHashMap<>();
+    private final Semaphore slots = new Semaphore(MAX_KEYS);
+    private final AtomicBoolean sweeping = new AtomicBoolean();
     private final LongSupplier ticker;
-    // Accessed only while holding sweepLock.
+    // Accessed only by the caller owning the sweeping flag.
     private long lastSweep;
 
     @Autowired
@@ -39,66 +36,48 @@ public class LoginRateLimiter {
     LoginRateLimiter(LongSupplier ticker) {
         this.ticker = ticker;
         lastSweep = ticker.getAsLong() - SWEEP_INTERVAL_NANOS;
-        for (int i = 0; i < stripes.length; i++) {
-            stripes[i] = new Stripe();
-        }
     }
 
     public void check(String address, String username) {
-        String sourceKey = "ip:" + address;
-        String accountKey = "user:" + username;
-        if (!checkWithLocks(sourceKey, accountKey)) {
-            // Never sweep while holding request locks. Only one caller sweeps,
-            // at most once per second, and other callers do not wait for it.
+        // Independent budgets: never hold one key's compute while updating another.
+        // Check both dimensions even if the first one rejects the request.
+        Decision source = recordWithCleanup("ip:" + address, 60);
+        Decision account = recordWithCleanup("user:" + username, 10);
+        if (source != Decision.ACCEPTED || account != Decision.ACCEPTED) {
+            throw new ApiError(HttpStatus.TOO_MANY_REQUESTS, "rate_limited");
+        }
+    }
+
+    private Decision recordWithCleanup(String key, int limit) {
+        Decision decision = recordAttempt(key, limit);
+        if (decision == Decision.CAPACITY) {
             sweepExpired();
-            if (!checkWithLocks(sourceKey, accountKey)) {
-                throw rateLimited();
-            }
+            decision = recordAttempt(key, limit);
         }
+        return decision;
     }
 
-    private boolean checkWithLocks(String sourceKey, String accountKey) {
-        int sourceIndex = stripeIndex(sourceKey);
-        int accountIndex = stripeIndex(accountKey);
-        // Stable lock ordering prevents deadlocks, including reversed key pairs.
-        synchronized (stripes[Math.min(sourceIndex, accountIndex)]) {
-            synchronized (stripes[Math.max(sourceIndex, accountIndex)]) {
-                Map<String, Deque<Long>> sources = stripes[sourceIndex].attempts;
-                Map<String, Deque<Long>> accounts = stripes[accountIndex].attempts;
-                int needed = (sources.containsKey(sourceKey) ? 0 : 1)
-                        + (accounts.containsKey(accountKey) ? 0 : 1);
-                if (!reserveKeys(needed)) {
-                    return false;
+    private Decision recordAttempt(String key, int limit) {
+        var decision = new AtomicReference<>(Decision.CAPACITY);
+        attempts.compute(key, (ignored, queue) -> {
+            if (queue == null) {
+                if (!slots.tryAcquire()) {
+                    return null;
                 }
-                // Read time after acquiring locks so timestamps remain ordered.
-                long now = ticker.getAsLong();
-                boolean source = recordAttempt(sources, sourceKey, 60, now);
-                boolean account = recordAttempt(accounts, accountKey, 10, now);
-                if (!source || !account) {
-                    throw rateLimited();
-                }
-                return true;
+                queue = new ArrayDeque<>();
             }
-        }
-    }
-
-    private static int stripeIndex(String key) {
-        int hash = key.hashCode();
-        return (hash ^ (hash >>> 16)) & (STRIPE_COUNT - 1);
-    }
-
-    private boolean reserveKeys(int needed) {
-        if (needed == 0) {
-            return true;
-        }
-        int current;
-        do {
-            current = keyCount.get();
-            if (current + needed > MAX_KEYS) {
-                return false;
+            // Sample inside compute so timestamps for this key stay ordered.
+            long now = ticker.getAsLong();
+            prune(queue, now);
+            if (queue.size() >= limit) {
+                decision.set(Decision.LIMITED);
+            } else {
+                queue.addLast(now);
+                decision.set(Decision.ACCEPTED);
             }
-        } while (!keyCount.compareAndSet(current, current + needed));
-        return true;
+            return queue;
+        });
+        return decision.get();
     }
 
     private static void prune(Deque<Long> queue, long now) {
@@ -107,19 +86,9 @@ public class LoginRateLimiter {
         }
     }
 
-    private static boolean recordAttempt(Map<String, Deque<Long>> attempts, String key, int limit, long now) {
-        Deque<Long> queue = attempts.computeIfAbsent(key, ignored -> new ArrayDeque<>());
-        prune(queue, now);
-        // Both dimensions are checked; a saturated key neither grows nor extends its lockout.
-        if (queue.size() >= limit) {
-            return false;
-        }
-        queue.addLast(now);
-        return true;
-    }
-
     private void sweepExpired() {
-        if (!sweepLock.tryLock()) {
+        // Capacity pressure may trigger one sweep per second. Other callers skip it.
+        if (!sweeping.compareAndSet(false, true)) {
             return;
         }
         try {
@@ -128,25 +97,21 @@ public class LoginRateLimiter {
                 return;
             }
             lastSweep = now;
-            for (Stripe stripe : stripes) {
-                synchronized (stripe) {
-                    var entries = stripe.attempts.values().iterator();
-                    while (entries.hasNext()) {
-                        Deque<Long> queue = entries.next();
-                        prune(queue, now);
-                        if (queue.isEmpty()) {
-                            entries.remove();
-                            keyCount.decrementAndGet();
-                        }
-                    }
+            attempts.forEach((key, ignored) -> {
+                // Use the same per-key atomic operation as writers to avoid
+                // removing a queue that another request has just refreshed.
+                Deque<Long> remaining = attempts.computeIfPresent(key, (name, queue) -> {
+                    prune(queue, ticker.getAsLong());
+                    return queue.isEmpty() ? null : queue;
+                });
+                // Only this sweeper removes entries, so each removed key releases
+                // exactly one slot, after removal has completed.
+                if (remaining == null) {
+                    slots.release();
                 }
-            }
+            });
         } finally {
-            sweepLock.unlock();
+            sweeping.set(false);
         }
-    }
-
-    private static ApiError rateLimited() {
-        return new ApiError(HttpStatus.TOO_MANY_REQUESTS, "rate_limited");
     }
 }

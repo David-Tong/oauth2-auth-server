@@ -113,8 +113,9 @@ invalid CSRF, 415 for a non-JSON content type, and 429 for rate limiting.
 Login requests are limited to 4 KiB. Rate limits are 10 attempts per username and
 60 per source address over a sliding 60-second window, held in bounded process
 memory. Saturated keys do not record additional rejected attempts or extend their
-lockout. Requests check both account and source limits, using striped locks so
-unrelated requests can proceed concurrently.
+lockout. Requests check account and source limits independently through
+`ConcurrentHashMap.compute`, with no nested application locks. A nonblocking
+semaphore bounds the number of stored keys.
 
 ## Deployment configuration
 

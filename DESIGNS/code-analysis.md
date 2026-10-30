@@ -198,7 +198,7 @@ the setting to that profile, so deployment configuration must control it.
 | Client registrations | Configuration, in-memory repository |
 | Browser identity and pending flow | Servlet session; no shared session store configured |
 | Codes, grants, token status | `InMemoryOAuth2AuthorizationService`; lost on restart |
-| Login attempt windows | Timestamp queues under 64 ordered lock stripes; reset on restart |
+| Login attempt windows | Timestamp queues updated through per-key concurrent-map operations; reset on restart |
 | Signing material | External keystore by default; survives restart if retained |
 
 Persistent keys allow an already-issued JWT to remain signature-verifiable after
@@ -222,14 +222,19 @@ verification; they are not a claim of a complete security audit.
    atomic code consumption in shared durable storage rather than this lock.
 2. **Rate limiting is bounded and process-local.** Updated on 2026-10-29 to use
    timestamp queues for sliding 60-second windows and a monotonic ticker. Each
-   request locks only its source/account stripes in index order, and prunes only
-   its two queues. Atomic capacity reservation enforces 10,000 keys, including
-   concurrent insertions; existing keys remain usable at capacity. Capacity
-   pressure triggers a sweep at most once per second, locking one stripe at a
-   time; other callers skip an in-progress sweep and may receive 429 until space
-   is reclaimed. Saturated queues do not retain further rejected attempts, so
-   memory stays bounded and such attempts do not extend that key's lockout.
-   Stripe collisions still cause some contention. Use upstream source limits
+   request updates its source and account independently with
+   `ConcurrentHashMap.compute`, pruning only the affected queues. No callback
+   acquires another key. A semaphore acquired with `tryAcquire` enforces 10,000
+   keys; existing keys remain usable at capacity. A request may consume one
+   budget even if the other rejects it; the pair is intentionally not a single
+   transaction. Capacity pressure triggers a sweep at most once per second,
+   guarded by an atomic flag. Cleanup uses `computeIfPresent` so a concurrent
+   refresh cannot be lost, and releases permits after removing entries. Other
+   callers skip an in-progress sweep and may receive 429 until space is reclaimed.
+   Saturated queues do not retain further rejected attempts, so memory stays
+   bounded and such attempts do not extend that key's lockout. Concurrent-map
+   operations can still contend on shared keys or hash bins; this is not a
+   lock-free implementation. Use upstream source limits
    behind a proxy because `getRemoteAddr()` identifies the direct peer.
 3. **Configuration errors are only partly structured.** `AuthProperties` has no
    declarative validation, and several consumers assume non-null nested records,

@@ -27,8 +27,10 @@ class LoginRateLimiterTests {
     void unrelatedConcurrentRequestsRespectCapacityAndCanRecover() throws Exception {
         var now = new AtomicLong();
         var limiter = new LoginRateLimiter(now::get);
-        assertThat(concurrentChecks(5_100, i -> limiter.check("source-" + i, "user-" + i)))
+        assertThat(concurrentChecks(5_000, i -> limiter.check("source-" + i, "user-" + i)))
                 .isEqualTo(5_000);
+        assertThat(concurrentChecks(100, i -> limiter.check("extra-source-" + i, "extra-user-" + i)))
+                .isZero();
         now.set(Duration.ofSeconds(60).toNanos());
         assertThatCode(() -> limiter.check("fresh-source", "fresh-user")).doesNotThrowAnyException();
     }
