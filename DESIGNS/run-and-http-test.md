@@ -1,316 +1,291 @@
-# Run locally and test over HTTP
+﻿# 本地启动与 Chrome RestMan 测试
 
-Run commands from the repository root. This walkthrough uses PowerShell and
-Java 17+ with Maven on `PATH`. It exercises the real server without needing the
-separate login webapp. HTTP redirects are inspected rather than followed into
-the unimplemented `/app/login` and `/app/callback` pages.
+本文使用 Chrome 的 RestMan 插件发送 HTTP 请求，不需要编写客户端脚本。
+启动命令在项目根目录执行，需要 Java 17 或更新版本以及 Maven。
 
-## 1. Build and prepare a local user
+## 1. 构建并配置用户
 
-```powershell
-java -version
-mvn -version
+在终端执行：
+
+```shell
 mvn clean verify
 ```
 
-Generate a bcrypt hash in an interactive terminal (the utility needs a console):
+如果已经配置好 `config/users.json`，可以直接进入第 2 步。
 
-```powershell
-java '-Dloader.main=io.ytong.authserver.tools.PasswordHash' -cp target/oauth2-auth-server-0.0.1-SNAPSHOT.jar org.springframework.boot.loader.launch.PropertiesLauncher
+否则，先生成密码哈希。在 Git Bash 中执行：
+
+```shell
+winpty java -Dloader.main=io.ytong.authserver.tools.PasswordHash -cp target/oauth2-auth-server-0.0.1-SNAPSHOT.jar org.springframework.boot.loader.launch.PropertiesLauncher
 ```
 
-Enter the same local test password twice. Copy the full printed `{bcrypt}...`
-value. Passwords must contain 1–72 UTF-8 bytes and no NUL character.
+按提示输入两次相同的密码。输入时不会显示字符。
+如果没有 `winpty`，打开 Windows 命令提示符（CMD），进入项目目录，执行：
 
-Create the local directory file only if it does not already exist:
+```shell
+java -Dloader.main=io.ytong.authserver.tools.PasswordHash -cp target/oauth2-auth-server-0.0.1-SNAPSHOT.jar org.springframework.boot.loader.launch.PropertiesLauncher
+```
 
-```powershell
-if (-not (Test-Path -LiteralPath config/users.json)) {
-    Copy-Item config/users.example.json config/users.json
+如果提示 `Run this utility from an interactive terminal`，说明 Java 没有检测到交互式控制台。
+请使用上面的 Git Bash + `winpty` 或独立 CMD 窗口，不要在 IDE 输出面板运行，也不要通过管道传入密码。
+
+在 IDE 中复制 `config/users.example.json`，将副本命名为 `config/users.json`。
+把副本的 `passwordHash` 替换成刚生成的完整值，包括 `{bcrypt}` 前缀：
+
+```json
+{
+  "schemaVersion": 1,
+  "users": [
+    {
+      "id": "user-001",
+      "username": "alice",
+      "passwordHash": "这里填写完整的 {bcrypt}... 值",
+      "enabled": true,
+      "roles": ["USER"]
+    }
+  ]
 }
 ```
 
-Edit `config/users.json`, replacing the placeholder `passwordHash` with the
-generated value. Keep the example username `alice`, ID `user-001`,
-`enabled: true`, and role `USER` for the expected responses below. Do not commit
-this local credential file. Existing users need not be replaced; adjust the
-username and expected identity below if using another account.
+上面的哈希是占位说明，必须替换。密码长度必须为 1–72 个 UTF-8 字节，不能包含 NUL。
+`users.example.json` 是示例文件；应用默认读取的是 `users.json`。
+修改用户文件后需要重启应用。不要提交本地用户文件。
 
-## 2. Start the server
+## 2. 启动应用
 
-In terminal A:
+在项目根目录执行，并保持终端运行：
 
-```powershell
+```shell
 java -jar target/oauth2-auth-server-0.0.1-SNAPSHOT.jar --spring.profiles.active=dev
 ```
 
-Alternatively, use `mvn spring-boot:run '-Dspring-boot.run.profiles=dev'`.
-Wait for the application-started message. The server uses
-`http://localhost:9000`; dev enables an ephemeral RSA key and cookies suitable
-for local HTTP. User data is still required. Keep terminal A running.
+出现 `Started AuthServerApplication` 表示启动成功。
+服务地址为 `http://localhost:9000`。`dev` 使用临时签名密钥并允许本地 HTTP Session Cookie。
+重启会清除 Session、授权状态和临时密钥。正式部署请参考 README 的密钥配置。
 
-Restart after changing the user file. Restart clears sessions and grants; dev
-also replaces the signing key. Use the README's production keystore instructions
-for deployments outside local development.
+## 3. 准备 RestMan
 
-## 3. Set up an HTTP client
+在 Chrome 中打开 RestMan。后续操作都使用同一个 Chrome Profile 和同一个 RestMan 会话。
 
-Run the remaining blocks in order in terminal B, using the same PowerShell
-session. This helper preserves cookies, returns HTTP error responses for
-inspection, and disables automatic redirects. It works with Windows PowerShell
-5.1 and PowerShell 7.
+发送请求时：
 
-```powershell
-Add-Type -AssemblyName System.Net.Http
-$base = 'http://localhost:9000'
-$handler = [System.Net.Http.HttpClientHandler]::new()
-$handler.AllowAutoRedirect = $false
-$handler.CookieContainer = [System.Net.CookieContainer]::new()
-$client = [System.Net.Http.HttpClient]::new($handler)
+1. 选择请求方法，例如 GET 或 POST。
+2. 输入完整 URL。
+3. 按需填写 Headers 和 Body。
+4. 点击发送，检查状态码、响应头和响应体。
 
-function Send-Http {
-    param(
-        [string]$Method,
-        [string]$Path,
-        [string]$Body,
-        [string]$ContentType = 'application/json',
-        [hashtable]$Headers = @{}
-    )
-    $request = [System.Net.Http.HttpRequestMessage]::new(
-        [System.Net.Http.HttpMethod]::new($Method), "$base$Path")
-    foreach ($name in $Headers.Keys) {
-        $null = $request.Headers.TryAddWithoutValidation($name, [string]$Headers[$name])
-    }
-    if ($PSBoundParameters.ContainsKey('Body')) {
-        $request.Content = [System.Net.Http.StringContent]::new(
-            $Body, [System.Text.Encoding]::UTF8, $ContentType)
-    }
-    $response = $client.SendAsync($request).GetAwaiter().GetResult()
-    try {
-        [pscustomobject]@{
-            Status = [int]$response.StatusCode
-            Location = [string]$response.Headers.Location
-            Body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        }
-    } finally {
-        $response.Dispose()
-        $request.Dispose()
-    }
-}
+所有请求都使用 `localhost`，不要混用 `127.0.0.1`，因为 Cookie 按主机区分。
+让 Chrome 管理 `JSESSIONID`，不要手动写死它；登录成功后 Session ID 会更新。
 
-function Encode([string]$Value) { [uri]::EscapeDataString($Value) }
+如果 RestMan 自动跟随重定向，可以在 RestMan 页面的 Chrome DevTools → Network 中勾选
+Preserve log，重新发送请求，查看重定向链中每个请求的状态和 `Location` 响应头。
+本项目不提供 `/app/login` 和 `/app/callback` 页面，这两个页面的最终错误不代表前面的授权请求失败。
+
+## 4. 检查服务
+
+在 RestMan 分别发送以下请求，不需要 Body 或 Authorization 请求头：
+
+| 方法 | URL | 预期结果 |
+| --- | --- | --- |
+| GET | `http://localhost:9000/.well-known/oauth-authorization-server` | 200，OAuth2 元数据，issuer 为 `http://localhost:9000` |
+| GET | `http://localhost:9000/oauth2/jwks` | 200，RSA 公钥信息，不包含私钥 |
+| GET | `http://localhost:9000/api/auth/session` | 尚未登录时为 401 |
+
+如果最后一个请求返回 200，说明当前 Chrome 会话已经登录。
+可以先按第 9 步退出，或在 Chrome 中清除 localhost 的 Cookie 后重新开始。
+
+## 5. 登录前发起授权请求
+
+选择 GET，粘贴下面这一整行 URL：
+
+```text
+http://localhost:9000/oauth2/authorize?response_type=code&client_id=webapp&redirect_uri=http%3A%2F%2Flocalhost%3A9000%2Fapp%2Fcallback&scope=demo.read&state=restman-test-001&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256
 ```
 
-## 4. Check public endpoints and an anonymous session
+不需要 Body 或额外请求头。原始响应应为：
 
-```powershell
-Send-Http GET '/.well-known/oauth-authorization-server'
-Send-Http GET '/oauth2/jwks'
-Send-Http GET '/api/auth/session'
+```http
+HTTP/1.1 302
+Location: /app/login
 ```
 
-Expect 200 metadata with issuer `http://localhost:9000`, 200 public RSA JWKS,
-and 401 `unauthorized` for the anonymous session. JWKS must not expose private
-RSA parameters. Discovery is OAuth2 metadata; OIDC is not enabled.
+服务端会在当前 Session 中保存待继续的授权请求。
+如果 RestMan 自动跟随跳转，最终可能显示 `/app/login` 的 401；请在 Network 中查看最初的 302。
+确认服务端设置的 `JSESSIONID` 在后续请求中被发送。
 
-## 5. Start authorization before login
+本例固定使用以下 PKCE 测试数据，两者必须配套：
 
-Generate a fresh PKCE verifier, S256 challenge, and state:
-
-```powershell
-$random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-$bytes = New-Object byte[] 32
-$random.GetBytes($bytes)
-$random.Dispose()
-$verifier = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-$sha = [System.Security.Cryptography.SHA256]::Create()
-$challenge = [Convert]::ToBase64String(
-    $sha.ComputeHash([System.Text.Encoding]::ASCII.GetBytes($verifier))
-).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-$sha.Dispose()
-$state = [guid]::NewGuid().ToString('N')
-$redirectUri = "$base/app/callback"
-$authorizePath = '/oauth2/authorize?response_type=code&client_id=webapp' +
-    '&redirect_uri=' + (Encode $redirectUri) + '&scope=demo.read' +
-    '&state=' + $state + '&code_challenge=' + $challenge +
-    '&code_challenge_method=S256'
-
-$authorization = Send-Http GET $authorizePath
-$authorization
-```
-
-Expect 302 with `Location: /app/login`. The cookie container now holds the
-session containing the pending request. Do not follow that location: this
-repository does not serve a login page. The continuation expires in five minutes;
-a newer authorization request in this session replaces it.
-
-## 6. Fetch CSRF and log in
-
-```powershell
-$csrf = (Send-Http GET '/api/auth/csrf').Body | ConvertFrom-Json
-$csrfHeaders = @{}
-$csrfHeaders[$csrf.headerName] = $csrf.token
-$credential = Get-Credential -UserName alice -Message 'Enter the local test password'
-$loginBody = @{
-    username = $credential.UserName
-    password = $credential.GetNetworkCredential().Password
-} | ConvertTo-Json -Compress
-$loginResult = Send-Http POST '/api/auth/login' -Body $loginBody -Headers $csrfHeaders
-$loginBody = $null
-$credential = $null
-$loginResult
-$login = $loginResult.Body | ConvertFrom-Json
-Send-Http GET '/api/auth/session'
-```
-
-Expect login 200 with `user.id: user-001`, `user.username: alice`, and a
-`continueUrl` beginning `/api/auth/continue?id=`. Session inspection returns
-200 with that identity. The server rotates the session ID; the cookie container
-keeps the updated cookie. Login without step 5 instead returns
-`continueUrl: null`. Login does not issue an access token.
-
-## 7. Resume authorization and capture the code
-
-```powershell
-$continuation = Send-Http GET $login.continueUrl
-$continuation
-$callback = Send-Http GET $continuation.Location
-$callback
-
-# Parse the callback Location without requesting the webapp page.
-$callbackUri = [uri]$callback.Location
-if ($callbackUri.GetLeftPart([System.UriPartial]::Path) -ne $redirectUri) {
-    throw 'Unexpected callback URI'
-}
-$parameters = @{}
-foreach ($pair in $callbackUri.Query.TrimStart('?').Split('&')) {
-    $parts = $pair.Split('=', 2)
-    $parameters[[uri]::UnescapeDataString($parts[0])] =
-        [uri]::UnescapeDataString($parts[1].Replace('+', ' '))
-}
-if ($parameters['state'] -ne $state) { throw 'OAuth state mismatch' }
-$code = $parameters['code']
-if (-not $code) { throw 'No authorization code returned' }
-```
-
-Expect two 302 responses: first to the saved `/oauth2/authorize?...` URL, then
-to the exact registered callback with `code` and the original `state`.
-The continuation is single-use. The authorization code expires in 60 seconds;
-perform the next step promptly.
-
-## 8. Exchange the code for a token
-
-```powershell
-$tokenBody = 'grant_type=authorization_code&client_id=webapp' +
-    '&redirect_uri=' + (Encode $redirectUri) + '&code=' + (Encode $code) +
-    '&code_verifier=' + (Encode $verifier)
-$tokenResult = Send-Http POST '/oauth2/token' -Body $tokenBody `
-    -ContentType 'application/x-www-form-urlencoded'
-$tokenResult
-$tokens = $tokenResult.Body | ConvertFrom-Json
-```
-
-Expect 200 with `access_token`, `token_type: Bearer`, scope `demo.read`, and
-approximately 300 seconds of validity. No refresh token is issued. `webapp` is a
-public client; do not send a client secret or user password to this endpoint.
-
-To inspect the JWT payload locally:
-
-```powershell
-$payload = $tokens.access_token.Split('.')[1].Replace('-', '+').Replace('_', '/')
-$payload = $payload.PadRight($payload.Length + ((4 - $payload.Length % 4) % 4), '=')
-[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) |
-    ConvertFrom-Json
-```
-
-Expect `sub: user-001`, issuer `http://localhost:9000`, audience `demo-api`,
-`client_id: webapp`, granted scope, and time claims. Decoding is inspection only;
-it does not verify the signature. A separate resource server must validate the
-signature against JWKS, issuer, audience, expiry, and required scope. This app
-does not expose a demo bearer-protected business API. Automated integration tests
-also verify the JWT signature using its published public key.
-
-## 9. Log out with a fresh CSRF token
-
-```powershell
-$csrf = (Send-Http GET '/api/auth/csrf').Body | ConvertFrom-Json
-$csrfHeaders = @{}
-$csrfHeaders[$csrf.headerName] = $csrf.token
-Send-Http POST '/api/auth/logout' -Headers $csrfHeaders
-Send-Http GET '/api/auth/session'
-```
-
-Expect 204, then 401. The CSRF token from before login is no longer valid.
-Logout ends the browser session; an issued JWT can remain valid at a resource
-server until its expiry.
-
-## 10. Negative HTTP checks
-
-Run these after the successful flow. For code replay, run the check only when
-the earlier code has already been successfully exchanged; replay handling may
-invalidate the server-side authorization associated with that code.
-
-```powershell
-# Reuse an already consumed continuation: authenticated session required.
-# Run before logout if testing this case: expect 400 authorization_expired.
-# Send-Http GET $login.continueUrl
-
-# Code replay: expect 400 OAuth error.
-Send-Http POST '/oauth2/token' -Body $tokenBody `
-    -ContentType 'application/x-www-form-urlencoded'
-
-# Missing CSRF: expect 403 forbidden, before credential validation.
-Send-Http POST '/api/auth/login' -Body '{"username":"alice","password":"wrong"}'
-
-# Valid CSRF plus bad credentials: expect 401 invalid_credentials.
-$csrf = (Send-Http GET '/api/auth/csrf').Body | ConvertFrom-Json
-$csrfHeaders = @{}
-$csrfHeaders[$csrf.headerName] = $csrf.token
-Send-Http POST '/api/auth/login' -Headers $csrfHeaders `
-    -Body '{"username":"alice","password":"wrong"}'
-
-# Malformed login schema: expect 400 invalid_request.
-Send-Http POST '/api/auth/login' -Headers $csrfHeaders -Body '{}'
-
-# Unregistered redirect: expect 400 with no Location header.
-Send-Http GET ($authorizePath.Replace((Encode $redirectUri), (Encode 'https://attacker.example/callback')))
-
-# Plain PKCE: expect 400.
-Send-Http GET ($authorizePath.Replace('code_challenge_method=S256', 'code_challenge_method=plain'))
-
-# Introspection without confidential-client authentication: expect 401.
-Send-Http POST '/oauth2/introspect' -ContentType 'application/x-www-form-urlencoded' -Body 'token=fake'
-```
-
-The default public client cannot authenticate to introspection/revocation.
-For successful calls, configure a confidential client with a bcrypt secret hash
-and obtain its token using that client's own code flow. The existing
-`AuthServerIntegrationTests.confidentialClientAuthenticatesAndCanIntrospectAndRevoke`
-test covers that scenario with test-only client configuration.
-
-## Troubleshooting and cleanup
-
-| Symptom | Check |
+| 参数 | 值 |
 | --- | --- |
-| Startup reports invalid user directory | File exists, placeholder hash replaced, strict schema valid, roles match configured policy |
-| Startup requires keystore/password | Activate `dev` for this local walkthrough |
-| Cannot connect | Server started, port 9000 free, terminal A still running |
-| Login 403 | Fetch CSRF with this same client/cookie container and send its named header |
-| Login 401 | Username/password correct, user enabled, server restarted after user-file changes |
-| Login 429 | Account limit is 10 attempts/minute; source limit is 60/minute, including successful attempts; wait at least 60 seconds |
-| Continuation 400 | Flow expired, replaced, consumed, or belongs to another session; start again at step 5 |
-| Token exchange 400 | Code expired/used, verifier differs, or redirect/client does not match; obtain a fresh code |
-| `/app/login` or `/app/callback` fails | Those routes belong to the separate webapp; inspect redirects without following them |
+| code_verifier | `dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk` |
+| code_challenge | `E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM` |
+| code_challenge_method | `S256` |
+| state | `restman-test-001` |
 
-Dispose the HTTP client after finishing:
+这些固定值仅用于手动测试。实际客户端必须为每次流程生成新的随机 verifier 和 state。
+待继续请求在 5 分钟后过期；同一个 Session 中的新授权请求会替换旧请求。
 
-```powershell
-$client.Dispose()
-$tokens = $null
-$tokenBody = $null
-$verifier = $null
+## 6. 获取 CSRF token，然后登录
+
+先发送：
+
+```http
+GET http://localhost:9000/api/auth/csrf
 ```
 
-Stop the server with Ctrl+C in terminal A. Clearing variables is cleanup, not a
-guarantee of memory erasure. Keep token responses and local credentials out of
-shared terminal transcripts.
+预期返回 200，例如：
+
+```json
+{
+  "token": "这里是服务端返回的 token",
+  "headerName": "X-CSRF-TOKEN"
+}
+```
+
+复制返回的 token。然后新建登录请求：
+
+| 项目 | 填写内容 |
+| --- | --- |
+| Method | POST |
+| URL | `http://localhost:9000/api/auth/login` |
+| Header | `Content-Type: application/json` |
+| Header | 名称使用返回的 `headerName`，值使用返回的 `token` |
+| Body 类型 | Raw JSON |
+
+Body 填写：
+
+```json
+{
+  "username": "alice",
+  "password": "生成哈希时输入的原始密码"
+}
+```
+
+将密码说明替换成你的真实测试密码，不要填写 bcrypt 哈希。
+预期返回 200：
+
+```json
+{
+  "user": {
+    "id": "user-001",
+    "username": "alice"
+  },
+  "continueUrl": "/api/auth/continue?id=服务端生成的ID"
+}
+```
+
+如果 `continueUrl` 为 null，说明当前 Session 没有有效的待继续请求，请检查 Cookie 并重新从第 5 步开始。
+登录只建立 Session，不会直接返回 access token。
+
+可以再发送 GET `http://localhost:9000/api/auth/session`，预期返回 200 和 alice 的身份信息。
+
+## 7. 继续授权并取得 code
+
+复制登录响应中的 `continueUrl`，前面加上 `http://localhost:9000`，发送 GET。
+例如，实际 ID 要使用登录响应中的值：
+
+```text
+http://localhost:9000/api/auth/continue?id=服务端生成的ID
+```
+
+预期的重定向链为：
+
+1. 302 到原来的 `/oauth2/authorize?...`。
+2. 302 到 `http://localhost:9000/app/callback?code=...&state=restman-test-001`。
+
+如果 RestMan 不自动跟随重定向，就逐次对 `Location` 地址发送 GET，直到取得 callback 地址。
+如果它自动跟随，就在 Network 的重定向链中查看 callback 对应的 `Location`。
+
+确认 callback 路径等于注册的 `/app/callback`，并且 state 等于 `restman-test-001`。
+复制 URL 中 `code` 参数的值。若它含有 `%` 转义，填写表单前先进行 URL 解码。
+无需访问 callback 页面本身，它由单独的 webapp 提供。
+
+继续链接只能使用一次。取得 code 后，请在 60 秒内执行下一步。
+
+## 8. 用 code 换取 access token
+
+在 RestMan 中新建请求：
+
+| 项目 | 填写内容 |
+| --- | --- |
+| Method | POST |
+| URL | `http://localhost:9000/oauth2/token` |
+| Header | `Content-Type: application/x-www-form-urlencoded` |
+| Body 类型 | URL-encoded 表单，不要选择 multipart 或 JSON |
+
+表单字段：
+
+| 字段 | 值 |
+| --- | --- |
+| grant_type | `authorization_code` |
+| client_id | `webapp` |
+| redirect_uri | `http://localhost:9000/app/callback` |
+| code | 上一步取得的 code |
+| code_verifier | `dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk` |
+
+不需要 Basic Auth 或 client secret。不要把登录密码放在这个请求中。
+如果 RestMan 没有 URL-encoded 表单模式，可以选择 Raw，并发送下面的内容，替换 `CODE`：
+
+```text
+grant_type=authorization_code&client_id=webapp&redirect_uri=http%3A%2F%2Flocalhost%3A9000%2Fapp%2Fcallback&code=CODE&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+```
+
+Raw 模式中，code 如果包含保留字符，也必须进行 URL 编码。
+预期返回 200，包含 `access_token`、`token_type: Bearer`、约 300 秒的有效期和 scope `demo.read`。
+不会返回 refresh token。每个 code 只能成功交换一次。
+
+本项目没有用于测试 Bearer token 的业务 API。业务资源服务器需要验证签名、issuer、
+audience `demo-api`、有效期和 scope；仅解码 JWT 不等于验证签名。
+
+## 9. 退出登录
+
+登录会使旧 CSRF token 失效，因此先重新发送：
+
+```http
+GET http://localhost:9000/api/auth/csrf
+```
+
+使用新返回的 headerName 和 token，发送：
+
+```http
+POST http://localhost:9000/api/auth/logout
+X-CSRF-TOKEN: 这里填写新返回的token
+```
+
+请求头名称以实际返回的 headerName 为准，不需要 Body。预期返回 204。
+再发送 GET `http://localhost:9000/api/auth/session`，应返回 401。
+退出只结束浏览器 Session；已经发出的 JWT 在使用本地签名验证的资源服务器上可能继续有效，直到过期。
+
+## 10. 错误场景测试
+
+| 测试 | 操作 | 预期 |
+| --- | --- | --- |
+| 缺少 CSRF | POST 登录时不发送 CSRF 请求头 | 403 |
+| 密码错误 | 使用有效 CSRF，但填写错误密码 | 401，`invalid_credentials` |
+| 登录字段不完整 | 使用有效 CSRF，JSON Body 填写 `{}` | 400，`invalid_request` |
+| code 重复使用 | 成功换取 token 后，再发送相同 token 请求 | 400 OAuth 错误；可能使关联授权失效 |
+| PKCE 不支持 | 第 5 步 URL 的 `code_challenge_method=S256` 改为 `plain` | 400 |
+| redirect_uri 未注册 | 第 5 步改成其他回调地址 | 400，不跳转到该地址 |
+| 继续链接重复使用 | 已登录时，再次访问已消费的 continueUrl | 400，`authorization_expired` |
+| 未认证的 introspection | POST `/oauth2/introspect`，URL-encoded Body 为 `token=fake` | 401 |
+
+默认 `webapp` 是公共客户端，不能作为 confidential client 认证到 introspection/revocation。
+成功的 introspection/revocation 需要另行配置带 bcrypt secret hash 的 confidential client，
+再使用该客户端自己的授权码流程取得 token。已有集成测试覆盖此场景。
+
+## 常见问题
+
+| 问题 | 检查内容 |
+| --- | --- |
+| `AuthProperties.users()` 为 null | 检查 `target/classes/application.yaml` 是否存在；执行 `mvn resources:resources` 并在 IDE 重新加载 Maven 项目；用 dev profile 启动，不要只加载 application-dev.yaml |
+| `User directory missing or invalid` | 确认存在 `config/users.json`，而不是只编辑 example；哈希完整，JSON 字段和角色正确 |
+| 启动要求 keystore/password | 本地测试需要激活 dev profile |
+| 登录 403 | CSRF token 和 Cookie 必须来自同一个会话；登录后需要重新获取 CSRF |
+| 登录 401 | 检查原始密码、用户名和 enabled；修改 users.json 后重启 |
+| 登录后授权仍跳转登录页 | 检查 JSESSIONID 是否发送，登录后是否接受了更新的 Cookie，主机是否一直使用 localhost |
+| 登录 429 | 滑动 60 秒内，每用户名最多 10 次，每来源地址最多 60 次；停止重试并等待至少 60 秒 |
+| continueUrl 过期或为空 | 检查 Session，重新从第 5 步开始 |
+| token 请求 400 | code 是否过期或已使用，verifier 是否一致，redirect_uri 和 client_id 是否匹配 |
+| `/app/login` 或 `/app/callback` 页面失败 | 本项目不提供这些页面；通过 Network 检查前面的 302 和 Location |
+
+完成后，在运行服务的终端按 Ctrl+C 停止应用。不要分享包含密码、Session Cookie 或 access token 的截图和日志。

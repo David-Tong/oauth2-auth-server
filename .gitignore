@@ -28,3 +28,7 @@ target/
 config/users.json
 config/clients.yaml
 config/keys/
+
+# IDEA
+*.iml
+.idea/
