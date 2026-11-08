@@ -42,7 +42,7 @@ a reverse proxy, while keeping their implementations separate. This avoids
 cross-site session-cookie dependencies. A separate-origin deployment requires
 explicit credentialed CORS and a cookie/CSRF review before use.
 
-Configure the canonical issuer explicitly (local default `http://localhost:9000`).
+Configure the canonical issuer explicitly (local default `http://localhost:9001`).
 Use HTTPS outside loopback development and trust forwarded headers only from
 configured proxies.
 
@@ -277,7 +277,7 @@ passwords, password hashes, authorization codes, access tokens, or session cooki
 
 ## Delivery plan and acceptance checks
 
-1. **Scaffold:** Maven parent/dependencies, Boot entry point, port 9001,
+1. **Scaffold:** Maven parent/dependencies, Boot entry point, port 9000,
    and application-context smoke test. No custom authentication is implemented yet.
 2. **Directory and authentication API:** implement schema validation, password
    encoder, `JsonUserDetailsService`, and JSON authentication/session endpoints.

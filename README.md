@@ -44,14 +44,14 @@ requires a restart. Invalid or missing user files prevent startup.
 mvn spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-The server listens at `http://localhost:9001`. The explicit `dev` profile enables
+The server listens at `http://localhost:9000`. The explicit `dev` profile enables
 an ephemeral signing key and non-Secure cookies for local HTTP. The default
 registered public client is `webapp`, with the exact redirect URI
-`http://localhost:9000/app/callback` and scope `demo.read`.
+`http://localhost:9001/app/callback` and scope `demo.read`.
 
-The webapp's Vite dev server listens at `http://localhost:9000` and proxies API
-requests to port 9001. The public issuer remains `http://localhost:9000`.
-Start both projects and open `http://localhost:9000/app/` in the browser.
+The webapp's Vite dev server listens at `http://localhost:9001` and proxies API
+requests to port 9000. The public issuer remains `http://localhost:9001`.
+Start both projects and open `http://localhost:9001/app/` in the browser.
 
 Serve your webapp's `/app/**` routes through a reverse proxy on the same public
 origin. Route `/api/auth/**`, `/oauth2/**`, and `/.well-known/**` to this server.

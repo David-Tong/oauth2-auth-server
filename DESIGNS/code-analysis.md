@@ -206,7 +206,7 @@ a restart, even though server-side grant state is gone. Logout and revocation
 do not immediately invalidate tokens at APIs that validate JWTs locally. User
 changes require restart and cannot revoke those tokens by themselves.
 
-The default configuration uses port 9001, a 15-minute session idle timeout,
+The default configuration uses port 9000, a 15-minute session idle timeout,
 HttpOnly/SameSite=Lax cookies, and Secure cookies unless overridden. The dev
 profile disables Secure cookies for local HTTP. Forwarded headers are ignored.
 The webapp must be routed separately under the same public origin; this service

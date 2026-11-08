@@ -8,7 +8,7 @@ spring:
   application:
     name: oauth2-auth-server
 server:
-  port: 9001
+  port: 9000
   forward-headers-strategy: none
   max-http-request-header-size: 16KB
   servlet:
@@ -22,7 +22,7 @@ server:
     max-http-form-post-size: 8KB
     max-swallow-size: 8KB
 auth:
-  issuer: ${AUTH_ISSUER:http://localhost:9000}
+  issuer: ${AUTH_ISSUER:http://localhost:9001}
   login-url: ${AUTH_LOGIN_URL:/app/login}
   audience: demo-api
   users:
@@ -35,7 +35,7 @@ auth:
   clients:
     - id: webapp
       redirect-uris:
-        - http://localhost:9000/app/callback
+        - http://localhost:9001/app/callback
       scopes:
         - demo.read
   role-scopes:
