@@ -19,6 +19,7 @@ server:
         same-site: lax
         secure: ${AUTH_COOKIE_SECURE:true}
   tomcat:
+    use-relative-redirects: true
     max-http-form-post-size: 8KB
     max-swallow-size: 8KB
 auth:
