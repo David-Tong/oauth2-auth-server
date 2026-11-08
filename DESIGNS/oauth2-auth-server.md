@@ -277,7 +277,7 @@ passwords, password hashes, authorization codes, access tokens, or session cooki
 
 ## Delivery plan and acceptance checks
 
-1. **Scaffold:** Maven parent/dependencies, Boot entry point, port 9000,
+1. **Scaffold:** Maven parent/dependencies, Boot entry point, port 9001,
    and application-context smoke test. No custom authentication is implemented yet.
 2. **Directory and authentication API:** implement schema validation, password
    encoder, `JsonUserDetailsService`, and JSON authentication/session endpoints.

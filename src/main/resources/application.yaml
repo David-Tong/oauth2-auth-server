@@ -8,7 +8,7 @@ spring:
   application:
     name: oauth2-auth-server
 server:
-  port: 9000
+  port: 9001
   forward-headers-strategy: none
   max-http-request-header-size: 16KB
   servlet:
